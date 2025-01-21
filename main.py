@@ -37,6 +37,8 @@ def infer():
             print(ix)
             xcol = torch.gather(topk_idx, -1, ix)
             x = torch.cat((x, xcol), dim  = 1)
-
+    
+    # decoding the probits 
+    
 if __name__ == "__main__":
     infer()
