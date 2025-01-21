@@ -22,18 +22,21 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, 
+                                                                                                       config.block_size))
+
     def forward(self, x):
         B, T, C = x.size()  
 
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd,  dim = 2)
-        k = k.view(B, T , self.n_head, C // self.n_embd).transpose(1, 2) # (B, nh, T, C)
-        q = q.view(B, T , self.n_head, C // self.n_embd).transpose(1, 2) # (B, nh, T, C)
-        v = v.view(B, T , self.n_head, C // self.n_embd).transpose(1, 2) # (B, nh, T, C)
+        k = k.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
+        q = q.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
+        v = v.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
 
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.n_head))
         att = att.masked_fill(self.bias[:,:,:T, :T] == 0 ,float('-inf'))  # why is the masking with negative infinite? 
-        att = F.softmax(att)
+        att = F.softmax(att, dim = -1)
         y = att @ v  # (B, nh, T, T) x (B, nh, T, bs) --> (B, nh, T, bs)
         y = y.transpose(1, 2).contiguous().view(B,T,C)
 
@@ -79,8 +82,8 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x): 
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
 
         return x 
 
@@ -131,6 +134,6 @@ class GPT2(nn.Module):
         for block in self.transformer.h: 
             x = block(x)
         x = self.transformer.ln_f(x)
-        logits = self.transformer(x)
+        logits = self.lm_head(x)
 
         return logits
