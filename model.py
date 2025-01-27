@@ -140,7 +140,7 @@ class SamarthGPT2(nn.Module):
         elif isinstance(module, nn.Embedding): 
             torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
 
-    def forward(self, idx): 
+    def forward(self, idx, labels = None): 
         B, T = idx.size()
         assert T <= self.config.block_size, f'Input sequence longer than max context size' 
         pos = torch.arange(0, T, dtype= torch.long, device = idx.device)
@@ -153,4 +153,6 @@ class SamarthGPT2(nn.Module):
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
-        return logits
+        if labels is not None: 
+            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+        return logits, loss

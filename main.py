@@ -1,6 +1,7 @@
 from model import SamarthGPT2, GPT2Configuration
 import tiktoken
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from dataset import GPT2LiteDataset
@@ -12,9 +13,15 @@ def train():
 
     # hyper-parameters
     optimizer = AdamW(model.parameters(), lr= 3e-4) # initalized from Karpathy implementation
+ 
     for i in range(50): 
         x, y = train_data.__next_batch__()
-        print(x.shape, y.shape)
+        optimizer.zero_grad()
+        logits, loss = model(x, labels = y)
+        loss.backward()
+        optimizer.step()
+        print(f"{i} -- loss {loss.item()}")
+      
 
 def infer(): 
     config = GPT2Configuration
