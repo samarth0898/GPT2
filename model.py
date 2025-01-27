@@ -26,19 +26,19 @@ class CausalSelfAttention(nn.Module):
                                                                                                        config.block_size))
 
     def forward(self, x):
-        B, T, C = x.size()  
+        B, T, C = x.size() 
 
-        qkv = self.c_attn(x)
+        qkv = self.c_attn(x) 
         q, k, v = qkv.split(self.n_embd,  dim = 2)
-        k = k.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
-        q = q.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
-        v = v.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C)
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.n_head))
+        k = k.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C // nh)
+        q = q.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C // nh)
+        v = v.view(B, T , self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, C // nh)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.n_head)) # (B, nh, T, T)
         att = att.masked_fill(self.bias[:,:,:T, :T] == 0 ,float('-inf'))  # why is the masking with negative infinite? 
         att = F.softmax(att, dim = -1)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, bs) --> (B, nh, T, bs)
-        y = y.transpose(1, 2).contiguous().view(B,T,C)
+        y = att @ v  # (B, nh, T, T) x (B, nh, T, C // nh ) --> (B, nh, T, C // nh)
+        y = y.transpose(1, 2).contiguous().view(B,T,C) # (B, T, C)
 
         y = self.c_proj(y)
 
@@ -50,6 +50,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, config.n_embd * 4)
         self.gelu = nn.GELU(approximate = 'tanh')
         self.c_proj = nn.Linear(config.n_embd * 4, config.n_embd)
+        self.c_proj.RESIDUAL_INIT = 1
 
     def forward(self, x): 
         x = self.c_fc(x)
@@ -98,7 +99,7 @@ class GPT2Configuration:
     n_head = 12
     n_embd = 768
 
-class GPT2(nn.Module): 
+class SamarthGPT2(nn.Module): 
     """
     GPT2 model initialization class. To use weights from the OpenAI checkpoint, naming must be similar 
     
@@ -110,19 +111,35 @@ class GPT2(nn.Module):
 
     """
     def __init__(self, config): 
-        super(GPT2, self).__init__()
+        super(SamarthGPT2, self).__init__()
 
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
         wpe =  nn.Embedding(self.config.vocab_size, self.config.n_embd),
-        wte =  nn.Embedding(self.config.block_size, self.config.n_embd), 
+        wte =  nn.Embedding(self.config.block_size, self.config.n_embd),  # this layer is the same as lm_head layer,  weight tying from 'attention is all you need' 
         h = nn.ModuleList(Block(config) for _ in range(config.n_layers)),
         ln_f = nn.LayerNorm(config.n_embd)))
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False)
         # h = nn.ModuleList()
+
+        # weight sharing/ weight tying scheme between wte(forward) and lm_head(inverse)
+        self.transformer.wte.weight = self.lm_head.weight
+        self.apply(self.__init__weights__)
+
+    def __init__weights__(self, module): 
         
+        if isinstance(module, nn.Linear): 
+            std = 0.02
+            if hasattr(module, 'RESIDUAL_INIT'): 
+                std *= (2 * self.config.n_layers) ** -0.5            # adjust the variance of the init with the number of residual connections, no variance accumulation 
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
+            if module.bias is not None: 
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding): 
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
+
     def forward(self, idx): 
         B, T = idx.size()
         assert T <= self.config.block_size, f'Input sequence longer than max context size' 

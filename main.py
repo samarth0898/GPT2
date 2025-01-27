@@ -1,17 +1,28 @@
-from model import GPT2, GPT2Configuration
+from model import SamarthGPT2, GPT2Configuration
 import tiktoken
 import torch
 import torch.nn.functional as F
+from torch.optim import AdamW
+from dataset import GPT2LiteDataset
 
+def train(): 
+    config = GPT2Configuration
+    model = SamarthGPT2(config)
+    train_data = GPT2LiteDataset(B = 4, T = 32)
 
+    # hyper-parameters
+    optimizer = AdamW(model.parameters(), lr= 3e-4) # initalized from Karpathy implementation
+    for i in range(50): 
+        x, y = train_data.__next_batch__()
+        print(x.shape, y.shape)
 
 def infer(): 
     config = GPT2Configuration
-    model = GPT2(config)
+    model = SamarthGPT2(config)
     
     # GPT BPE tokenizer ~ tiktoken
-    enc = tiktoken.get_encoding('gpt2')
-    token = enc.encode("Hello, I'm Samarth")
+    encoder = tiktoken.get_encoding('gpt2')
+    token = encoder.encode("Hello, I'm Samarth")
     token = torch.tensor(token, dtype = torch.long)
     
     num_return_sequence = 5
@@ -34,11 +45,15 @@ def infer():
 
             topk_probs, topk_idx = torch.topk(probs, 50, dim = -1) # top k choices from the vocabulary
             ix = torch.multinomial(topk_probs, 1)
-            print(ix)
             xcol = torch.gather(topk_idx, -1, ix)
             x = torch.cat((x, xcol), dim  = 1)
     
     # decoding the probits 
-    
+    for i in range(num_return_sequence): 
+        token = x[i,:max_generation_length].tolist()
+        decoded = encoder.decode(token)
+        print("==", decoded)
+
 if __name__ == "__main__":
-    infer()
+    #infer()
+    train()
