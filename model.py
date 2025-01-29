@@ -90,8 +90,6 @@ class Block(nn.Module):
 
 
 
-
-
 class GPT2Configuration: 
     block_size = 1024 # context length 
     vocab_size = 50257 # vocab size of the byte-pair encodings 

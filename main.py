@@ -1,4 +1,5 @@
 from model import SamarthGPT2, GPT2Configuration
+import time 
 import tiktoken
 import torch
 import torch.nn as nn
@@ -9,17 +10,26 @@ from dataset import GPT2LiteDataset
 def train(): 
     config = GPT2Configuration
     model = SamarthGPT2(config)
+    model = torch.compile(model) # avoids the HBM <--> cache transfers, optimize memory transfer with kernel fusion
+
     train_data = GPT2LiteDataset(B = 4, T = 32)
 
     # hyper-parameters
     optimizer = AdamW(model.parameters(), lr= 3e-4) # initalized from Karpathy implementation
- 
+    
+    torch.set_float32_matmul_precision('high') # TF32 
     for i in range(50): 
+        time0 = time.time()
         x, y = train_data.__next_batch__()
         optimizer.zero_grad()
-        logits, loss = model(x, labels = y)
+        with torch.autocast(device_type = device, dtype = torch.bfloat16): # automatic mixed precision training
+            logits, loss = model(x, labels = y)
         loss.backward()
         optimizer.step()
+        
+        torch.cuda.synchronize()
+        time1 = time.time()
+        print(f'{(train_data.B * train_data.T)/ }')
         print(f"{i} -- loss {loss.item()}")
       
 
