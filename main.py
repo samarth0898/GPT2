@@ -1,4 +1,4 @@
-from model import SamarthGPT2, GPT2Configuration, configure_optimizer
+from model import SamarthGPT2, GPT2Configuration
 import time, math
 import tiktoken
 import torch
@@ -14,20 +14,17 @@ min_lr = max_lr * 0.1
 
 max_step = 19073 # total_steps = 10e9 / 2**19 ~ 19,073
 warmup_steps = 715 # 375e6/2**19 ~ 715 
-
+total_batch_size = 524288 # from GPT2 params
+B = 4
+T = 1024
+grad_accum_steps = total_batch_size //(B*T)
 
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
-if torch.backends.mps():
+if torch.backends.mps.is_available():
     device = 'mps'
 print(f'selected device {device}')
-
-total_batch_size = 524288 # from GPT2 params
-B = 16
-T = 1024
-
-grad_accum_steps = total_batch_size //(B*T)
 
 # cosine annealing learning rate scheduler with warmup 
 def get_lr(iteration):
@@ -45,40 +42,58 @@ def get_lr(iteration):
 def train(): 
     config = GPT2Configuration
     model = SamarthGPT2(config)
-    model = torch.compile(model) # avoids the HBM <--> cache transfers, optimize memory transfer with kernel fusion
+    if device == 'cuda':
+        model = torch.compile(model) # avoids the HBM <--> cache transfers, optimize memory transfer with kernel fusion
+    else: 
+        pass
 
-    train_data = GPT2LiteDataset(B = 4, T = 32)
+    train_data = GPT2LiteDataset(B = B, T = T)
 
     # hyper-parameters
     # optimizer = AdamW(model.parameters(), lr= 3e-4, betas=(0.9, 0.95), eps = 10e-8) # initalized from Karpathy implementation
-    device = 'cuda'
-    optimizer = configure_optimizer(weight_decay = 0.1, lr = 6e-4, device = device)
+  
+    optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device_type = device)
     
     torch.set_float32_matmul_precision('high') # TF32 
-    for i in range(50): 
+    
+    for step in range(max_step): 
         time0 = time.time()
+        # ADD IN THE VALIDATION HERE 
+
+        model.train()
         optimizer.zero_grad()
-        for mini_step in range(grad_accum_steps): # gradient accumulations 
+        for mini_step in range(grad_accum_steps): # gradient accumulations to simulate true batch size 
             x, y = train_data.__next_batch__()
             x, y = x.to(), y.to()
-            with torch.autocast(device_type = device, dtype = torch.bfloat16): # automatic mixed precision training
+            if device == 'cuda':
+                with torch.autocast(device_type = device, dtype = torch.bfloat16): # automatic mixed precision training
+                    logits, loss = model(x, labels = y)
+            else: 
                 logits, loss = model(x, labels = y)
             loss = loss / grad_accum_steps # manually averaging the losses
             loss.backward() # this automaticall accumulates the back-prop gradients
-
+            break
         # clip the gradient norm according to GPT3 paper - preventing the model from getting very big alterations in the backprop
-        norm = torch.nn.utils.clip_grad_norm(model.parameter(), 1.0) 
-        # set the learning rate for this 
-        lr = get_lr(i)
+        norm = torch.nn.utils.clip_grad_norm(model.parameters(), 1.0) 
+        
+        # set the learning rate based on the step
+        lr = get_lr(step)
         for param in optimizer.param_groups: 
             param['lr'] = lr 
         optimizer.step()
         
-        torch.cuda.synchronize()
+        if device == 'cuda':
+            torch.cuda.synchronize() # for timing the code 
+        if device == 'mps': 
+            torch.mps.synchronize() # for debugging on mac
         time1 = time.time()
-        # print(f'{(train_data.B * train_data.T)/ }')
+     
+        # calculate tokens per second 
+        dt = time1 - time0
+        tokens_processed = train_data.B * train_data.T * grad_accum_steps #* ddp_world_size
+        tokens_per_sec = tokens_processed / dt
 
-        print(f"{i} -- loss {loss.item()} | norm {norm} | get_lr {lr} | time {time1 - time0}")
+        print(f"{step} -- train loss {loss.item():%04d} | norm {norm:%04d} | get_lr {lr} | token/sec {tokens_per_sec} | time {dt}")
       
 
 def infer(): 

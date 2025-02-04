@@ -44,7 +44,7 @@ class CausalSelfAttention(nn.Module):
             y = att @ v  # (B, nh, T, T) x (B, nh, T, C // nh ) --> (B, nh, T, C // nh)
         
         if self.flash_attn: 
-            y = F.scaled_dot_product_attention(q, k, v , is_casual = True)
+            y = F.scaled_dot_product_attention(q, k, v , is_causal = True)
         y = y.transpose(1, 2).contiguous().view(B,T,C) # (B, T, C)
 
         y = self.c_proj(y)
@@ -98,8 +98,9 @@ class Block(nn.Module):
 
 
 class GPT2Configuration: 
+    
     block_size = 1024 # context length 
-    vocab_size = 50257 # vocab size of the byte-pair encodings 
+    vocab_size = 50304 # vocab size of the byte-pair encodings 
     n_layers = 12
     n_head = 12
     n_embd = 768
@@ -162,7 +163,7 @@ class SamarthGPT2(nn.Module):
             loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
         return logits, loss
     
-def configure_optimizers(self, weight_decay, learning_rate, device_type):
+    def configure_optimizers(self, weight_decay, learning_rate, device_type):
         # start with all of the candidate parameters (that require grad)
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
@@ -181,8 +182,11 @@ def configure_optimizers(self, weight_decay, learning_rate, device_type):
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == "cuda"
+        if device_type == "cuda":
+            use_fused = fused_available and device_type == "cuda"
         # if master_process:
-        print(f"using fused AdamW: {use_fused}")
+        else: 
+            use_fused = False
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+
         return optimizer
