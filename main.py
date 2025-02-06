@@ -1,10 +1,51 @@
 from model import SamarthGPT2, GPT2Configuration
 import time, math
 import tiktoken
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from dataset import GPT2LiteDataset
+
+
+
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+if torch.backends.mps.is_available():
+    device = 'mps'
+print(f'selected device {device}')
+
+# ddp codebase 
+
+ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    dist.init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK']) # number assigned to each parallel process
+    ddp_local_rank = int(os.environ['LOCAL_RANK']) # rank of the GPU on a single node [0,1]
+    ddp_world_size = int(os.environ['WORLD_SIZE']) # number of avaliable processes / num of gpus
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    # attempt to autodetect device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
+
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -16,15 +57,9 @@ warmup_steps = 715 # 375e6/2**19 ~ 715
 total_batch_size = 524288 # from GPT2 params
 B = 4
 T = 1024
-grad_accum_steps = total_batch_size //(B*T)
-
-device = 'cpu'
-if torch.cuda.is_available():
-    device = 'cuda'
-if torch.backends.mps.is_available():
-    device = 'mps'
-print(f'selected device {device}')
-
+assert total_batch_size % ((B*T*ddp_world_size)) == 0, 'adjust the batch size slightly'
+grad_accum_steps = total_batch_size //(B*T*ddp_world_size)
+print(f'total batch {total_batch_size}, total grad accum {grad_accum_steps}')
 
 # cosine annealing learning rate scheduler with warmup 
 def get_lr(iteration):
@@ -39,6 +74,7 @@ def get_lr(iteration):
     coeff  = 0.5 * (1.0 + math.pi + decay_ratio)
     return min_lr + coeff * (max_lr - min_lr)
 
+
 def train(): 
     config = GPT2Configuration
     model = SamarthGPT2(config)
@@ -47,8 +83,8 @@ def train():
     else: 
         pass
 
-    train_data = GPT2LiteDataset(B = B, T = T)
-    val_data = None
+    train_data = GPT2LiteDataset(B = B, T = T, split = 'train')
+    val_data = GPT2LiteDataset(B = B, T = T, split = 'val')
 
   
     optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device_type = device) # initialized from Karpathy implementation
@@ -60,13 +96,15 @@ def train():
         last_step = (step == max_step - 1)
         # ADD IN THE VALIDATION HERE 
         if step % 250 == 0 or last_step:
-            val_loss = val(model, val_data)
+            # val_loss = val(model, val_data, device_type = device)
+            pass
         
         model.train()
         optimizer.zero_grad()
         for mini_step in range(grad_accum_steps): # gradient accumulations to simulate true batch size 
             x, y = train_data.__next_batch__()
             x, y = x.to(), y.to()
+            print(x.shape)
             if device == 'cuda':
                 with torch.autocast(device_type = device, dtype = torch.bfloat16): # automatic mixed precision training
                     logits, loss = model(x, labels = y)
@@ -98,14 +136,15 @@ def train():
 
         print(f"{step} -- train loss {loss.item():.4f} | norm {norm:.4f} | get_lr {lr} | token/sec {tokens_per_sec:.4f} | time {dt:.4f}")
       
-def val(model, val_loader):
+def val(model, val_loader, device_type):
     model.eval()
-    val_loader.reset()
+    # val_loader.reset()
     with torch.no_grad():
         val_loss_accum = 0.0
         val_loss_steps = 20
         for _ in range(val_loss_steps):
-            x, y = val_loader.next_batch()
+            x, y = val_loader.__next_batch__()
+            print(x.shape, y.shape)
             x, y = x.to(device), y.to(device)
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 logits, loss = model(x, y)

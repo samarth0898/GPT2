@@ -26,7 +26,7 @@ class GPT2LiteDataset():
     1 Million tokens in the shakesphere dataset 
     """
     
-    def __init__(self, B, T): 
+    def __init__(self, B, T, split): 
         super(GPT2LiteDataset, self).__init__ 
         with open('input.txt', 'r') as f: 
             text = f.read()

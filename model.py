@@ -154,6 +154,7 @@ class SamarthGPT2(nn.Module):
         tok_emb = self.transformer.wte(idx)
         
         x = pos_emb + tok_emb
+        # print(f'after position embeddings {pos_emb.shape}, {tok_emb.shape}, {x.shape}')
         for block in self.transformer.h: 
             x = block(x)
         x = self.transformer.ln_f(x)
