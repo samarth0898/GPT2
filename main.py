@@ -4,7 +4,6 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 from dataset import GPT2LiteDataset
 
 max_lr = 6e-4
@@ -25,6 +24,7 @@ if torch.cuda.is_available():
 if torch.backends.mps.is_available():
     device = 'mps'
 print(f'selected device {device}')
+
 
 # cosine annealing learning rate scheduler with warmup 
 def get_lr(iteration):
@@ -48,18 +48,20 @@ def train():
         pass
 
     train_data = GPT2LiteDataset(B = B, T = T)
+    val_data = None
 
-    # hyper-parameters
-    # optimizer = AdamW(model.parameters(), lr= 3e-4, betas=(0.9, 0.95), eps = 10e-8) # initalized from Karpathy implementation
   
-    optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device_type = device)
+    optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate = 6e-4, device_type = device) # initialized from Karpathy implementation
     
-    torch.set_float32_matmul_precision('high') # TF32 
+    torch.set_float32_matmul_precision('high') # TF32 operations in BF16
     
     for step in range(max_step): 
         time0 = time.time()
+        last_step = (step == max_step - 1)
         # ADD IN THE VALIDATION HERE 
-
+        if step % 250 == 0 or last_step:
+            val_loss = val(model, val_data)
+        
         model.train()
         optimizer.zero_grad()
         for mini_step in range(grad_accum_steps): # gradient accumulations to simulate true batch size 
@@ -71,8 +73,9 @@ def train():
             else: 
                 logits, loss = model(x, labels = y)
             loss = loss / grad_accum_steps # manually averaging the losses
-            loss.backward() # this automaticall accumulates the back-prop gradients
+            loss.backward()
             break
+
         # clip the gradient norm according to GPT3 paper - preventing the model from getting very big alterations in the backprop
         norm = torch.nn.utils.clip_grad_norm(model.parameters(), 1.0) 
         
@@ -93,8 +96,22 @@ def train():
         tokens_processed = train_data.B * train_data.T * grad_accum_steps #* ddp_world_size
         tokens_per_sec = tokens_processed / dt
 
-        print(f"{step} -- train loss {loss.item():%04d} | norm {norm:%04d} | get_lr {lr} | token/sec {tokens_per_sec} | time {dt}")
+        print(f"{step} -- train loss {loss.item():.4f} | norm {norm:.4f} | get_lr {lr} | token/sec {tokens_per_sec:.4f} | time {dt:.4f}")
       
+def val(model, val_loader):
+    model.eval()
+    val_loader.reset()
+    with torch.no_grad():
+        val_loss_accum = 0.0
+        val_loss_steps = 20
+        for _ in range(val_loss_steps):
+            x, y = val_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            loss = loss / val_loss_steps
+            val_loss_accum += loss.detach()
+    return val_loss_accum
 
 def infer(): 
     config = GPT2Configuration
