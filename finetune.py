@@ -9,7 +9,7 @@ Alignment stages (similar to InstructGPT)
 Some capbilites from hugging face are used here (SFTTrainer etc. )
 """
 import torch 
-from model import GPT2Configuration, SamarthGPT2
+from GPT2.model.custom_model import GPT2Configuration, SamarthGPT2
 
 def train_sft():
     pass 

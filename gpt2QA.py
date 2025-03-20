@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import Dataset, DistributedSampler, DataLoader 
 
 # Custom trained modules 
-from model import GPT, GPTConfig 
+from model.original_model import GPT, GPTConfig
 from my_huggingface.optimization import GPT2Adam 
 from my_huggingface.dataset_processor import preprocess_training_examples 
 import tiktoken 
