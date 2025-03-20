@@ -8,7 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from dataset import GPT2LiteDataset
-
+import os 
+print(os.environ.get('TIKTOKEN_CACHE_DIR'))
 
 
 device = 'cpu'
